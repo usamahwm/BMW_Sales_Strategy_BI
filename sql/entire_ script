@@ -1,0 +1,175 @@
+--    - Price_USD and Sales_Volume: Do they look like numbers, or do they have currency symbols/commas?
+--    - Fuel_Type: Are there obvious spelling variations?
+SELECT *
+FROM bmw_sales
+LIMIT 10;
+
+--  Count how many records have NULL or zero Price_USD
+SELECT 
+  COUNT(*) AS Missing_Prices
+FROM 
+  bmw_sales
+WHERE 
+  Price_USD IS NULL
+  OR Price_USD = 0;
+
+-- Generate a single‐row report string
+SELECT 
+  CONCAT(
+    'Missing Prices: ', 
+    COUNT(*), 
+    ' records have NULL/Zero Price_USD. ',
+    'Action Needed: Impute or remove these records in 1.3, ',
+    'as they invalidate revenue calculations.'
+  ) AS report
+FROM 
+    bmw_sales
+WHERE 
+  Price_USD IS NULL
+  OR Price_USD = 0;
+
+-- Check the min/max of the numerical data for potential outliers (using CAST for ranges since they might be VARCHAR).
+SELECT
+    MIN(CAST(Price_USD AS DECIMAL)) AS Min_Price,
+    MAX(CAST(Price_USD AS DECIMAL)) AS Max_Price,
+    MIN(Year) AS Min_Year,
+    MAX(Year) AS Max_Year
+FROM bmw_sales;
+
+-- Create analytically rich columns and a final analysis view.
+-- Current year is hardcoded as 2024 for consistent 'Age' calculation.
+
+--  Create 'Car_Age' (Years since manufacturing)
+ALTER TABLE bmw_sales ADD COLUMN Car_Age INT;
+UPDATE bmw_sales
+SET Car_Age = 2024 - Year;
+
+--  Create 'Sales_Efficiency' (Volume / Price: Demand at a given price point)
+-- Measures how well a model sells relative to its average price.
+ALTER TABLE bmw_sales ADD COLUMN Sales_Efficiency DECIMAL(10, 5)
+UPDATE bmw_sales
+SET Sales_Efficiency = Sales_Volume / Price_USD;
+
+--  Create 'Price_Per_KM' (Depreciation/Value Retention Proxy)
+ALTER TABLE bmw_sales ADD COLUMN Price_Per_KM DECIMAL(10, 5);
+UPDATE bmw_sales
+SET Price_Per_KM = Price_USD / Mileage_KM;
+
+--  Create an Analysis View (v_bmw_sales_analysis)
+-- This protects the base table and bundles all engineered features, including Estimated_Revenue.
+CREATE OR REPLACE VIEW v_bmw_sales_analysis AS
+SELECT
+    *, -- Select all columns, including the new engineered features
+    (Price_USD * Sales_Volume) AS Estimated_Revenue -- The key revenue metric
+FROM bmw_sales;
+
+-- Final Check: Examine the new features in the view
+SELECT
+    Model,
+    Price_USD,
+    Sales_Volume,
+    Estimated_Revenue,
+    Car_Age,
+    Price_Per_KM
+FROM v_bmw_sales_analysis
+LIMIT 15;
+
+-- Objective: Identify the Top 5 regions and Top 5 models driving the highest Estimated Revenue.
+-- This determines strategic resource allocation.
+
+(   -- 2.1
+    -- Segment 1: Top 5 Regions by Revenue
+    SELECT
+        'Region' AS Segment_Type,
+        Region AS Segment_Value,
+        SUM(Estimated_Revenue) AS Total_Revenue_USD,
+        SUM(Sales_Volume) AS Total_Volume
+    FROM
+        v_bmw_sales_analysis
+    GROUP BY
+        Region
+    ORDER BY
+        Total_Revenue_USD DESC
+    LIMIT 5
+)
+UNION ALL
+(   -- 2.2
+    -- Segment 2: Top 5 Models by Revenue
+    SELECT
+        'Model' AS Segment_Type,
+        Model AS Segment_Value,
+        SUM(Estimated_Revenue) AS Total_Revenue_USD,
+        SUM(Sales_Volume) AS Total_Volume
+    FROM
+        v_bmw_sales_analysis
+    GROUP BY
+        Model
+    ORDER BY
+        Total_Revenue_USD DESC
+    LIMIT 5
+)
+ORDER BY
+    Total_Revenue_USD DESC;
+
+WITH YearlyEHSales AS (
+    SELECT
+        Year,
+        SUM(CASE WHEN Fuel_Type IN ('Electric', 'Hybrid') THEN Sales_Volume ELSE 0 END) AS E_H_Volume_Current,
+        SUM(Sales_Volume) AS Total_Volume_Current
+    FROM
+        v_bmw_sales_analysis
+    GROUP BY
+        Year
+)
+SELECT
+    Year,
+    E_H_Volume_Current,
+    -- Get the previous year's E/H volume for YOY calculation
+    LAG(E_H_Volume_Current, 1, 0) OVER (ORDER BY Year) AS E_H_Volume_Previous,
+    Total_Volume_Current,
+    -- Calculate YOY Growth Percentage
+    (E_H_Volume_Current - LAG(E_H_Volume_Current, 1, 0) OVER (ORDER BY Year)) / LAG(E_H_Volume_Current, 1, 0) OVER (ORDER BY Year) * 100 AS E_H_Volume_YOY_Growth_Pct
+FROM
+    YearlyEHSales
+ORDER BY
+    Year ASC;
+
+   -- Objective: Analyze how Price_Per_KM correlates with Car_Age to understand value retention.
+   -- A lower Price_Per_KM indicates better value retention as the car ages.
+   -- 2.3
+SELECT
+    Car_Age,
+    COUNT(*) AS Units_Analyzed,
+    -- Calculate the average Price_Per_KM score for each age group
+    AVG(Price_Per_KM) AS Avg_Price_Per_KM_Retention_Score,
+    -- Include Average Price and Mileage for reference, despite the previous data issue
+    AVG(Price_USD) AS Average_Price_USD_Reference,
+    AVG(Mileage_KM) AS Average_Mileage_KM_Reference
+FROM
+    v_bmw_sales_analysis
+WHERE
+    Car_Age BETWEEN 1 AND 15 -- Focus on typical used car ages
+GROUP BY
+    Car_Age
+HAVING
+    COUNT(*) >= 10 -- Ensure statistical significance
+ORDER BY
+    Car_Age ASC;
+
+-- Objective: Rank models based on Sales_Efficiency (Sales_Volume / Price_USD).
+-- A higher score means more units are sold per dollar of vehicle price, indicating optimal market alignment.
+-- 2.4
+SELECT
+    Model,
+    SUM(Sales_Volume) AS Total_Sales_Volume,
+    -- Calculate Efficiency Score 1: Volume per Dollar of Price
+    SUM(Sales_Volume) / SUM(Price_USD) AS Commercial_Efficiency_Score,
+    -- Calculate Efficiency Score 2: Average Revenue per Unit Sold
+    SUM(Estimated_Revenue) / SUM(Sales_Volume) AS Avg_Revenue_Per_Unit
+FROM
+    v_bmw_sales_analysis
+GROUP BY
+    Model
+ORDER BY
+    Commercial_Efficiency_Score DESC
+LIMIT 10;
