@@ -1,4 +1,4 @@
---    - Price_USD and Sales_Volume: Do they look like numbers, or do they have currency symbols/commas?
+
 --    - Fuel_Type: Are there obvious spelling variations?
 SELECT *
 FROM bmw_sales
