@@ -3,7 +3,7 @@
 **Prepared for:** BMW Executive Leadership
 **Analyst: Usamah Maphumulo**
 
-**Project Date:** October 2025
+**Project Date:** 21 October 2025
 
 ## EXECUTIVE SUMMARY & KEY RECOMMENDATIONS
 
